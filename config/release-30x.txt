@@ -6,12 +6,17 @@
 # Unlikely to need modification
 #BUILD_DIR=${CURRENT_DIR}/target
 #LOCAL_M2_REPO=${BUILD_DIR}/m2repo
+#P2_CACHE_DIR=${BUILD_DIR}/p2cache
 #SCALA_DIR=${BUILD_DIR}/scala
 #ZINC_BUILD_DIR=${BUILD_DIR}/zinc
+#SCALA_IDE_DIR=${BUILD_DIR}/scala-ide
+#SCALA_REFACTORING_DIR=${BUILD_DIR}/scala-refactoring
+#SCALARIFORM_DIR=${BUILD_DIR}/scalariform
 
 ##### what to do #####
 # release, release-dryrun, scala-validator
 OPERATION=release
+VERSION_TAG=rc01
 
 ##### Scala information #####
 SCALA_GIT_REPO=git://github.com/scala/scala
@@ -25,4 +30,17 @@ ZINC_BUILD_GIT_REPO=git://github.com/typesafehub/sbt-builds-for-ide
 ZINC_BUILD_GIT_BRANCH=master
 SBT_VERSION=0.13.0
 
+##### Scala IDE information #####
+#SCALA_IDE_GIT_REPO=git://github.com/scala-ide/scala-ide
+SCALA_IDE_GIT_BRANCH=release/scala-ide-3.0.x-juno
 
+##### Eclipse information ######
+ECLIPSE_PLATFORM=juno
+
+##### Scala Refactoring information #####
+#SCALA_REFACTORING_GIT_REPO=git://github.com/scala-ide/scala-refactoring
+SCALA_REFACTORING_GIT_BRANCH=0.6.0_SI-3.0.1-RC2_2.10.2
+
+##### Scalariform information #####
+SCALARIFORM_GIT_REPO=git://github.com/scala-ide/scalariform.git
+SCALARIFORM_GIT_BRANCH=scala-ide-3.0.1
