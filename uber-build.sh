@@ -160,6 +160,16 @@ function getP2CacheLocation () {
   echo ${P2_CACHE_DIR}/$1
 }
 
+# $1 - repository to merge
+# $2 - location to merge it to
+function mergeP2Repo () {
+  BUILD_TOOLS_DIR=${BUILD_DIR}/build-tools
+  fetchGitBranch $BUILD_TOOLS_DIR "git://github.com/scala-ide/build-tools.git" master
+
+  cd $BUILD_TOOLS_DIR/maven-tool/merge-site/
+  mvn $MAVEN_OPTS -Drepo.source="$1" -Drepo.dest="$2" package
+}
+
 # $1 - groupId
 # $2 - artifactId
 # $3 - version
@@ -231,17 +241,9 @@ function fetchGitBranch () {
 
 }
 
-##############
-##############
-# MAIN SCRIPT
-##############
-##############
-
 ##################
 # Check arguments
 ##################
-
-printStep "Check arguments"
 
 # $1 - error message
 function printErrorUsageAndExit () {
@@ -251,413 +253,775 @@ function printErrorUsageAndExit () {
   exit 1
 }
 
-if [ 1 != $# ]
-then
-  printErrorUsageAndExit "Wrong arguments"
-fi
+# $* - arguments
+function stepCheckArguments () {
+  printStep "Check arguments"
 
-CONFIG_FILE=$1
-if [ ! -f ${CONFIG_FILE} ]
-then
-  printErrorUsageAndExit "'${CONFIG_FILE}' doesn't exists or is not a file"
-fi
+  if [ 1 != $# ]
+  then
+    printErrorUsageAndExit "Wrong arguments"
+  fi
+
+  CONFIG_FILE=$1
+  if [ ! -f ${CONFIG_FILE} ]
+  then
+    printErrorUsageAndExit "'${CONFIG_FILE}' doesn't exists or is not a file"
+  fi
+}
 
 ####################
 # Build parameters
 ####################
 
-printStep "Load config"
+function stepLoadConfig () {
+  printStep "Load config"
 
-SCRIPT_DIR=$(cd "$( dirname "$0" )" && pwd)
-CURRENT_DIR=$(pwd)
+  SCRIPT_DIR=$(cd "$( dirname "$0" )" && pwd)
+  CURRENT_DIR=$(pwd)
 
 # Load the default parameters
 
-. ${SCRIPT_DIR}/config/default.conf
+  . ${SCRIPT_DIR}/config/default.conf
 
 # Load the config
 
-. ${CONFIG_FILE}
+  . ${CONFIG_FILE}
+}
 
 ############
 # Set flags
 ############
 
-printStep "Set flags"
+function stepSetFlags () {
+  printStep "Set flags"
 
 # flags
-RELEASE=false
-DRY_RUN=false
-VALIDATOR=false
-SIGN_ARTIFACTS=false
+  RELEASE=false
+  DRY_RUN=false
+  VALIDATOR=false
+  SIGN_ARTIFACTS=false
+  WORKSHEET_PLUGIN=false
+  PLAY_PLUGIN=false
+  SEARCH_PLUGIN=false
+  PUBLISH=false
 
-case ${OPERATION} in
-  release )
-    RELEASE=true
-    SIGN_ARTIFACTS=true
-    ;;
-  release-dryrun )
-    RELEASE=true
-    DRY_RUN=true
-    SIGN_ARTIFACTS=true
-    ;;
-  scala-validator )
-    VALIDATOR=true
-    ;;
-  * )
-    missingParameterChoice "OPERATION" "release, release-dryrun, scala-validator"
-    ;;
-esac
+  case ${OPERATION} in
+    release )
+      RELEASE=true
+      SIGN_ARTIFACTS=true
+      ;;
+    release-dryrun )
+      RELEASE=true
+      DRY_RUN=true
+      SIGN_ARTIFACTS=true
+      ;;
+    scala-validator )
+      VALIDATOR=true
+      ;;
+    * )
+      missingParameterChoice "OPERATION" "release, release-dryrun, scala-validator"
+      ;;
+  esac
+
+  if ${RELEASE}
+  then
+    for PLUGIN in ${PLUGINS}
+    do
+      case ${PLUGIN} in
+        worksheet )
+          WORKSHEET_PLUGIN=true
+          ;;
+        play )
+          PLAY_PLUGIN=true
+          ;;
+        search )
+          SEARCH_PLUGIN=true
+          ;;
+        * )
+          error "Unknown value in PLUGINS. Should be one of: worksheet play search."
+      esac
+    done
+
+    case ${BUILD_TYPE} in
+      dev | stable )
+        if ${DRY_RUN}
+        then
+          PUBLISH=false
+        else
+          PUBLISH=true
+        fi
+        ;;
+      * )
+        missingParameterChoice "PUBLISH" "dev, stable"
+        ;;
+    esac
+  fi
+
+}
 
 #################
 # Pre-requisites
 #################
 
-printStep "Check prerequisites"
+function stepCheckPrerequisites () {
+  printStep "Check prerequisites"
 
-JAVA_VERSION=$(java -version 2>&1 | grep 'java version' | awk -F '"' '{print $2;}')
-JAVA_SHORT_VERSION=${JAVA_VERSION:0:3}
-if [ "1.6" != "${JAVA_SHORT_VERSION}" ]
-then
-  error "Please run the script with Java 1.6. Current version is: ${JAVA_VERSION}."
-fi
-
-if $VALIDATOR
-then
-  checkExecutableOnPath ant
-  if [ "${RES}" != 0 ]
+  JAVA_VERSION=$(java -version 2>&1 | grep 'java version' | awk -F '"' '{print $2;}')
+  JAVA_SHORT_VERSION=${JAVA_VERSION:0:3}
+  if [ "1.6" != "${JAVA_SHORT_VERSION}" ]
   then
-    error "Ant is required to use a special version of Scala"
+    error "Please run the script with Java 1.6. Current version is: ${JAVA_VERSION}."
   fi
-fi
+
+  if $VALIDATOR
+  then
+    checkExecutableOnPath ant
+    if [ "${RES}" != 0 ]
+    then
+      error "Ant is required to use a special version of Scala"
+    fi
+  fi
+}
 
 ######################
 # Check configuration
 ######################
 
-printStep "Check configuration"
+function stepCheckConfiguration () {
+  printStep "Check configuration"
 
-checkParameters "SCRIPT_DIR" "BUILD_DIR" "LOCAL_M2_REPO" "P2_CACHE_DIR"
+  checkParameters "SCRIPT_DIR" "BUILD_DIR" "LOCAL_M2_REPO" "P2_CACHE_DIR"
 
-mkdir -p ${BUILD_DIR}
+  mkdir -p ${BUILD_DIR}
 
 # configure maven here. Needed for some checks
-MAVEN_OPTS="-e -U -Dmaven.repo.local=${LOCAL_M2_REPO}"
+  MAVEN_OPTS="-e -U -Dmaven.repo.local=${LOCAL_M2_REPO}"
 
-if ${RELEASE}
-then
-  checkParameters "SCALA_VERSION"
-fi 
-
-if ${VALIDATOR}
-then
-  checkParameters "SCALA_GIT_REPO" "SCALA_VERSION" "SCALA_GIT_HASH" "SCALA_DIR"
-  checkParameters "ZINC_BUILD_DIR" "ZINC_BUILD_GIT_REPO" "ZINC_BUILD_GIT_BRANCH"
-fi
-
-checkParameters "SCALA_IDE_DIR" "SCALA_IDE_GIT_REPO" "SCALA_IDE_GIT_BRANCH"
-checkParameters "ECLIPSE_PLATFORM" "VERSION_TAG"
-checkParameters "SCALA_REFACTORING_DIR" "SCALA_REFACTORING_GIT_REPO" "SCALA_REFACTORING_GIT_BRANCH"
-checkParameters "SCALARIFORM_DIR" "SCALARIFORM_GIT_REPO" "SCALARIFORM_GIT_BRANCH"
-
-if ${SIGN_ARTIFACTS}
-then
-  checkExecutableOnPath "keytool"
-  if [ "${RES}" != 0 ]
+  if ${RELEASE}
   then
-    error "keytool is required on PATH to sign the jars"
-  fi
-  checkExecutableOnPath "eclipse"
-  if [ "${RES}" != 0 ]
+    checkParameters "SCALA_VERSION"
+  fi 
+
+  if ${VALIDATOR}
   then
-    error "eclipse is required on PATH to sign the jars"
+    checkParameters "SCALA_GIT_REPO" "SCALA_VERSION" "SCALA_GIT_HASH" "SCALA_DIR"
+    checkParameters "ZINC_BUILD_DIR" "ZINC_BUILD_GIT_REPO" "ZINC_BUILD_GIT_BRANCH"
   fi
 
-  checkParameters "KEYSTORE_DIR" "KEYSTORE_PASS"
-  if [ ! -d "${KEYSTORE_DIR}" ]
-  then
-    checkParameters "KEYSTORE_GIT_REPO"
+  checkParameters "SCALA_IDE_DIR" "SCALA_IDE_GIT_REPO" "SCALA_IDE_GIT_BRANCH"
+  checkParameters "ECLIPSE_PLATFORM" "VERSION_TAG"
+  checkParameters "SCALA_REFACTORING_DIR" "SCALA_REFACTORING_GIT_REPO" "SCALA_REFACTORING_GIT_BRANCH"
+  checkParameters "SCALARIFORM_DIR" "SCALARIFORM_GIT_REPO" "SCALARIFORM_GIT_BRANCH"
 
-    fetchGitBranch "${KEYSTORE_DIR}" "${KEYSTORE_GIT_REPO}" master
+  if ${WORKSHEET_PLUGIN}
+  then
+    checkParameters "WORKSHEET_PLUGIN_DIR" "WORKSHEET_PLUGIN_GIT_REPO" "WORKSHEET_PLUGIN_GIT_BRANCH" "WORKSHEET_PLUGIN_VERSION_TAG"
   fi
 
-  keytool -list -keystore "${KEYSTORE_DIR}/typesafe.keystore" -storepass "${KEYSTORE_PASS}" -alias typesafe
-fi
+  if ${PLAY_PLUGIN}
+  then
+    checkParameters "PLAY_PLUGIN_DIR" "PLAY_PLUGIN_GIT_REPO" "PLAY_PLUGIN_GIT_BRANCH" "PLAY_PLUGIN_VERSION_TAG"
+  fi
 
-case ${SCALA_VERSION} in 
-  2.10.* )
-    SCALA_PROFILE="scala-2.10.x"
-    SCALA_REPO_SUFFIX="210x"
-    ;;
-  2.11.* )
-    SCALA_PROFILE="scala-2.11.x"
-    SCALA_REPO_SUFFIX="211x"
-    ;;
-  * )
-    error "Not supported version of Scala: ${SCALA_IDE_DIR}."
-    ;;
-esac
+  if ${SEARCH_PLUGIN}
+  then
+    checkParameters "SEARCH_PLUGIN_DIR" "SEARCH_PLUGIN_GIT_REPO" "SEARCH_PLUGIN_GIT_BRANCH" "SEARCH_PLUGIN_VERSION_TAG"
+  fi
+  
+  if ${PRODUCT}
+  then
+    checkParameters "PRODUCT_DIR" "PRODUCT_GIT_REPO" "PRODUCT_GIT_BRANCH" "PRODUCT_VERSION_TAG"
+  fi
 
-case ${ECLIPSE_PLATFORM} in
-  indigo )
-    ECLIPSE_PROFILE="eclipse-indigo"
-    ;;
-  juno )
-    ECLIPSE_PROFILE="eclipse-juno"
-    ;;
-  * )
-    error "Not supported eclipse platform: ${ECLIPSE_PLATFORM}."
-    ;;
-esac
+  if ${SIGN_ARTIFACTS}
+  then
+    checkExecutableOnPath "keytool"
+    if [ "${RES}" != 0 ]
+    then
+      error "keytool is required on PATH to sign the jars"
+    fi
+    checkExecutableOnPath "eclipse"
+    if [ "${RES}" != 0 ]
+    then
+      error "eclipse is required on PATH to sign the jars"
+    fi
+
+    checkParameters "KEYSTORE_DIR" "KEYSTORE_PASS"
+
+    cd $CURRENT_DIR
+    cd $KEYSTORE_DIR
+    KEYSTORE_DIR=$(pwd)
+
+    if [ ! -d "${KEYSTORE_DIR}" ]
+    then
+      checkParameters "KEYSTORE_GIT_REPO"
+
+      fetchGitBranch "${KEYSTORE_DIR}" "${KEYSTORE_GIT_REPO}" master
+    fi
+
+    keytool -list -keystore "${KEYSTORE_DIR}/typesafe.keystore" -storepass "${KEYSTORE_PASS}" -alias typesafe
+
+    MAVEN_SIGN_ARGS=" -Djarsigner.storepass=${KEYSTORE_PASS} -Djarsigner.keypass=${KEYSTORE_PASS} -Djarsigner.keystore=${KEYSTORE_DIR}/typesafe.keystore "
+  fi
+
+# set extra variables
+  case ${SCALA_VERSION} in 
+    2.10.* )
+      SCALA_PROFILE="scala-2.10.x"
+      SCALA_REPO_SUFFIX="210x"
+      ECOSYSTEM_SCALA_VERSION="scala210"
+      ;;
+    2.11.* )
+      SCALA_PROFILE="scala-2.11.x"
+      SCALA_REPO_SUFFIX="211x"
+      ECOSYSTEM_SCALA_VERSION="scala211"
+      ;;
+    * )
+      error "Not supported version of Scala: ${SCALA_IDE_DIR}."
+      ;;
+  esac
+
+  case ${ECLIPSE_PLATFORM} in
+    indigo )
+      ECLIPSE_PROFILE="eclipse-indigo"
+      ECOSYSTEM_ECLIPSE_VERSION="e37"
+      ;;
+    juno )
+      ECLIPSE_PROFILE="eclipse-juno"
+      ECOSYSTEM_ECLIPSE_VERSION="e38"
+      ;;
+    * )
+      error "Not supported eclipse platform: ${ECLIPSE_PLATFORM}."
+      ;;
+  esac
+}
 
 ########
 # Scala
 ########
 
-printStep "Scala"
+function stepScala () {
+  printStep "Scala"
 
-if ${RELEASE}
-then
-  checkNeeded "org.scala-lang" "scala-compiler" "${SCALA_VERSION}"
-  FULL_SCALA_VERSION=${SCALA_VERSION}
-
-  SCALA_UID=$(osgiVersion "org.scala-lang" "scala-compiler" "${SCALA_VERSION}")
-fi
-
-if ${VALIDATOR}
-then
-  FULL_SCALA_VERSION="${SCALA_VERSION}-${SCALA_GIT_HASH}-SNAPSHOT"
-  SCALA_VERSION_SUFFIX="-$SCALA_GIT_HASH-SNAPSHOT"
-  checkAvailability "org.scala-lang" "scala-compiler" "${FULL_SCALA_VERSION}"
-  if [ $RES != 0 ]
+  if ${RELEASE}
   then
-    # the scala build is not available locally. check in scala-webapps.
-    HTTP_STATUS=$(curl --write-out %{http_code} --silent --output /dev/null "http://scala-webapps.epfl.ch/artifacts/${SCALA_GIT_HASH}/")
-    if [ ${HTTP_STATUS} == 200 ]
-    then
-      info "Deploying Scala version from scala-webapps"
-      cd $TMP_DIR
-      rm -rf *
-      wget "http://scala-webapps.epfl.ch/artifacts/${SCALA_GIT_HASH}/maven.tgz"
-      tar xf maven.tgz
-      cd latest
-      ant \
-        -Dmaven.version.number="${FULL_SCALA_VERSION}" \
-        -Dlocal.snapshot.repository="${LOCAL_M2_REPO}" \
-        -Dmaven.version.suffix="${SCALA_VERSION_SUFFIX}" \
-        deploy.local
+    checkNeeded "org.scala-lang" "scala-compiler" "${SCALA_VERSION}"
+    FULL_SCALA_VERSION=${SCALA_VERSION}
 
-      checkNeeded "org.scala-lang" "scala-compiler" "${FULL_SCALA_VERSION}"
-    else
-      info "Building Scala from source"
-
-      fetchGitBranch "${SCALA_DIR}" "${SCALA_GIT_REPO}" "${SCALA_GIT_HASH}" NaN "pr"
-
-      cd ${SCALA_DIR}
-
-      ant -Divy.cache.ttl.default=eternal all.clean
-      git clean -fxd
-      ant \
-        distpack-maven-opt \
-        -Darchives.skipxz=true \
-        -Dlocal.snapshot.repository="${LOCAL_M2_REPO}" \
-        -Dversion.suffix="${SCALA_VERSION_SUFFIX}"
-
-      cd dists/maven/latest
-      ant \
-        -Dlocal.snapshot.repository="${LOCAL_M2_REPO}" \
-        -Dmaven.version.suffix="-${SCALA_VERSION_SUFFIX}" \
-        deploy.local
-
-      checkNeeded "org.scala-lang" "scala-compiler" "${FULL_SCALA_VERSION}"
-    fi
+    SCALA_UID=$(osgiVersion "org.scala-lang" "scala-compiler" "${SCALA_VERSION}")
   fi
-  SCALA_UID=${SCALA_GIT_HASH}
-fi
 
-SHORT_SCALA_VERSION=$(echo ${FULL_SCALA_VERSION} | awk -F '.' '{print $1"."$2;}')
+  if ${VALIDATOR}
+  then
+    FULL_SCALA_VERSION="${SCALA_VERSION}-${SCALA_GIT_HASH}-SNAPSHOT"
+    SCALA_VERSION_SUFFIX="-$SCALA_GIT_HASH-SNAPSHOT"
+    checkAvailability "org.scala-lang" "scala-compiler" "${FULL_SCALA_VERSION}"
+    if [ $RES != 0 ]
+    then
+      # the scala build is not available locally. check in scala-webapps.
+      HTTP_STATUS=$(curl --write-out %{http_code} --silent --output /dev/null "http://scala-webapps.epfl.ch/artifacts/${SCALA_GIT_HASH}/")
+      if [ ${HTTP_STATUS} == 200 ]
+      then
+        info "Deploying Scala version from scala-webapps"
+        cd $TMP_DIR
+        rm -rf *
+        wget "http://scala-webapps.epfl.ch/artifacts/${SCALA_GIT_HASH}/maven.tgz"
+        tar xf maven.tgz
+        cd latest
+        ant \
+          -Dmaven.version.number="${FULL_SCALA_VERSION}" \
+          -Dlocal.snapshot.repository="${LOCAL_M2_REPO}" \
+          -Dmaven.version.suffix="${SCALA_VERSION_SUFFIX}" \
+          deploy.local
+
+        checkNeeded "org.scala-lang" "scala-compiler" "${FULL_SCALA_VERSION}"
+      else
+        info "Building Scala from source"
+
+        fetchGitBranch "${SCALA_DIR}" "${SCALA_GIT_REPO}" "${SCALA_GIT_HASH}" NaN "pr"
+
+        cd ${SCALA_DIR}
+
+        ant -Divy.cache.ttl.default=eternal all.clean
+        git clean -fxd
+        ant \
+          distpack-maven-opt \
+          -Darchives.skipxz=true \
+          -Dlocal.snapshot.repository="${LOCAL_M2_REPO}" \
+          -Dversion.suffix="${SCALA_VERSION_SUFFIX}"
+
+        cd dists/maven/latest
+        ant \
+          -Dlocal.snapshot.repository="${LOCAL_M2_REPO}" \
+          -Dmaven.version.suffix="-${SCALA_VERSION_SUFFIX}" \
+          deploy.local
+
+        checkNeeded "org.scala-lang" "scala-compiler" "${FULL_SCALA_VERSION}"
+      fi
+    fi
+    SCALA_UID=${SCALA_GIT_HASH}
+  fi
+  SHORT_SCALA_VERSION=$(echo ${FULL_SCALA_VERSION} | awk -F '.' '{print $1"."$2;}')
+}
 
 #######
 # Zinc
 #######
 
-printStep "Zinc"
+function stepZinc () {
+  printStep "Zinc"
 
-FULL_SBT_VERSION="${SBT_VERSION}-on-${FULL_SCALA_VERSION}-for-IDE-SNAPSHOT"
+  FULL_SBT_VERSION="${SBT_VERSION}-on-${FULL_SCALA_VERSION}-for-IDE-SNAPSHOT"
 
-if ${RELEASE}
-then
-  IDE_M2_REPO="http://typesafe.artifactoryonline.com/typesafe/ide-${SHORT_SCALA_VERSION}"
-  checkNeeded "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}" "${IDE_M2_REPO}"
-fi
-
-if ${VALIDATOR}
-then
-  checkAvailability "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}"
-  if [ $RES != 0 ]
+  if ${RELEASE}
   then
-    info "Building Zinc using dbuild"
-
-    fetchGitBranch "${ZINC_BUILD_DIR}" "${ZINC_BUILD_GIT_REPO}" "${ZINC_BUILD_GIT_BRANCH}" NaN
-
-    cd "${ZINC_BUILD_DIR}"
-
-    SCALA_VERSION="${FULL_SCALA_VERSION}" \
-      PUBLISH_REPO="file://${LOCAL_M2_REPO}" \
-      LOCAL_M2_REPO="${LOCAL_M2_REPO}" \
-      bin/dbuild sbt-on-${SHORT_SCALA_VERSION}.x
-
-    checkNeeded "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}"
+    IDE_M2_REPO="http://typesafe.artifactoryonline.com/typesafe/ide-${SHORT_SCALA_VERSION}"
+    checkNeeded "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}" "${IDE_M2_REPO}"
   fi
-fi
 
-SBT_UID=${FULL_SBT_VERSION}
+  if ${VALIDATOR}
+  then
+    checkAvailability "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}"
+    if [ $RES != 0 ]
+    then
+      info "Building Zinc using dbuild"
+
+      fetchGitBranch "${ZINC_BUILD_DIR}" "${ZINC_BUILD_GIT_REPO}" "${ZINC_BUILD_GIT_BRANCH}" NaN
+
+      cd "${ZINC_BUILD_DIR}"
+
+      SCALA_VERSION="${FULL_SCALA_VERSION}" \
+        PUBLISH_REPO="file://${LOCAL_M2_REPO}" \
+        LOCAL_M2_REPO="${LOCAL_M2_REPO}" \
+        bin/dbuild sbt-on-${SHORT_SCALA_VERSION}.x
+
+      checkNeeded "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}"
+    fi
+  fi
+
+  SBT_UID=${FULL_SBT_VERSION}
+}
 
 ##################
 # Build toolchain
 ##################
 
-printStep "Build toolchain"
+function stepToolchain () {
+  printStep "Build toolchain"
 
-fetchGitBranch "${SCALA_IDE_DIR}" "${SCALA_IDE_GIT_REPO}" "${SCALA_IDE_GIT_BRANCH}" NaN
+  fetchGitBranch "${SCALA_IDE_DIR}" "${SCALA_IDE_GIT_REPO}" "${SCALA_IDE_GIT_BRANCH}" NaN
 
-cd ${SCALA_IDE_DIR}
+  cd ${SCALA_IDE_DIR}
 
-SCALA_IDE_UID=$(git rev-parse HEAD)
+  SCALA_IDE_UID=$(git rev-parse HEAD)
 
-BUILD_TOOLCHAIN_P2_ID=toolchain/${SCALA_IDE_UID}/${SCALA_UID}/${SBT_UID}
+  BUILD_TOOLCHAIN_P2_ID=toolchain/${SCALA_IDE_UID}/${SCALA_UID}/${SBT_UID}
 
-checkP2Cache ${BUILD_TOOLCHAIN_P2_ID}
-if [ $RES != 0 ]
-then
-  info "building toolchain"
+  checkP2Cache ${BUILD_TOOLCHAIN_P2_ID}
+  if [ $RES != 0 ]
+  then
+    info "building toolchain"
 
-  MAVEN_ARGS="-P${ECLIPSE_PROFILE} -P${SCALA_PROFILE} -Psbt-new -Dscala.version=${FULL_SCALA_VERSION} -Dsbt.version=${SBT_VERSION} -Dsbt.ide.version=${FULL_SBT_VERSION}"
+    MAVEN_ARGS="-P${ECLIPSE_PROFILE} -P${SCALA_PROFILE} -Psbt-new -Dscala.version=${FULL_SCALA_VERSION} -Dsbt.version=${SBT_VERSION} -Dsbt.ide.version=${FULL_SBT_VERSION}"
 
-  mvn ${MAVEN_OPTS} ${MAVEN_ARGS} clean install 1>/dev/null 2>&1
+    mvn ${MAVEN_OPTS} ${MAVEN_ARGS} clean install 1>/dev/null 2>&1
 
-  cd ${SCALA_IDE_DIR}/org.scala-ide.build-toolchain
-  mvn ${MAVEN_OPTS} ${MAVEN_ARGS} clean install 1>/dev/null 2>&1
+    cd ${SCALA_IDE_DIR}/org.scala-ide.build-toolchain
+    mvn ${MAVEN_OPTS} ${MAVEN_ARGS} clean install 1>/dev/null 2>&1
 
-  cd ${SCALA_IDE_DIR}/org.scala-ide.toolchain.update-site
-  mvn ${MAVEN_OPTS} ${MAVEN_ARGS} clean verify 1>/dev/null 2>&1
+    cd ${SCALA_IDE_DIR}/org.scala-ide.toolchain.update-site
+    mvn ${MAVEN_OPTS} ${MAVEN_ARGS} clean verify 1>/dev/null 2>&1
 
-  cd ${TMP_DIR}
-  rm -rf *
-  mkdir fakeSite
-  cp -r ${SCALA_IDE_DIR}/org.scala-ide.toolchain.update-site/org.scala-ide.scala.update-site/target/site fakeSite/scala-eclipse-toolchain-osgi-${SCALA_REPO_SUFFIX}
+    cd ${TMP_DIR}
+    rm -rf *
+    mkdir fakeSite
+    cp -r ${SCALA_IDE_DIR}/org.scala-ide.toolchain.update-site/org.scala-ide.scala.update-site/target/site fakeSite/scala-eclipse-toolchain-osgi-${SCALA_REPO_SUFFIX}
 
-  storeP2Cache ${BUILD_TOOLCHAIN_P2_ID} ${TMP_DIR}/fakeSite
-fi
+    storeP2Cache ${BUILD_TOOLCHAIN_P2_ID} ${TMP_DIR}/fakeSite
+  fi
+}
 
 ####################
 # Scala Refactoring
 ####################
 
-printStep "Scala Refactoring"
+function stepScalaRefactoring () {
+  printStep "Scala Refactoring"
 
-fetchGitBranch "${SCALA_REFACTORING_DIR}" "${SCALA_REFACTORING_GIT_REPO}" "${SCALA_REFACTORING_GIT_BRANCH}" NaN
+  fetchGitBranch "${SCALA_REFACTORING_DIR}" "${SCALA_REFACTORING_GIT_REPO}" "${SCALA_REFACTORING_GIT_BRANCH}" NaN
 
-cd ${SCALA_REFACTORING_DIR}
+  cd ${SCALA_REFACTORING_DIR}
 
-SCALA_REFACTORING_UID=$(git rev-parse HEAD)
+  SCALA_REFACTORING_UID=$(git rev-parse HEAD)
 
-SCALA_REFACTORING_P2_ID=scala-refactoring/${SCALA_REFACTORING_UID}/${SCALA_IDE_UID}/${SCALA_UID}
+  SCALA_REFACTORING_P2_ID=scala-refactoring/${SCALA_REFACTORING_UID}/${SCALA_IDE_UID}/${SCALA_UID}
 
-checkP2Cache ${SCALA_REFACTORING_P2_ID}
-if [ $RES != 0 ]
-then
-  info "Building Scala Refactoring"
+  checkP2Cache ${SCALA_REFACTORING_P2_ID}
+  if [ $RES != 0 ]
+  then
+    info "Building Scala Refactoring"
 
-  mvn ${MAVEN_OPTS} \
-    -P ${SCALA_PROFILE} \
-    -Dscala.version=${FULL_SCALA_VERSION} \
-    -Drepo.scala-ide=file://$(getP2CacheLocation ${BUILD_TOOLCHAIN_P2_ID}) \
-    -Dgit.hash=${SCALA_REFACTORING_UID} \
-    clean \
-    verify
+    mvn ${MAVEN_OPTS} \
+      -P ${SCALA_PROFILE} \
+      -Dscala.version=${FULL_SCALA_VERSION} \
+      -Drepo.scala-ide=file://$(getP2CacheLocation ${BUILD_TOOLCHAIN_P2_ID}) \
+      -Dgit.hash=${SCALA_REFACTORING_UID} \
+      clean \
+      verify
 
-  storeP2Cache ${SCALA_REFACTORING_P2_ID} ${SCALA_REFACTORING_DIR}/org.scala-refactoring.update-site/target/site
-fi
+    storeP2Cache ${SCALA_REFACTORING_P2_ID} ${SCALA_REFACTORING_DIR}/org.scala-refactoring.update-site/target/site
+  fi
+}
 
 ##############
 # Scalariform
 ##############
 
-printStep "Scalariform"
+function stepScalariform () {
+  printStep "Scalariform"
 
-fetchGitBranch "${SCALARIFORM_DIR}" "${SCALARIFORM_GIT_REPO}" "${SCALARIFORM_GIT_BRANCH}" NaN
+  fetchGitBranch "${SCALARIFORM_DIR}" "${SCALARIFORM_GIT_REPO}" "${SCALARIFORM_GIT_BRANCH}" NaN
 
-cd ${SCALARIFORM_DIR}
+  cd ${SCALARIFORM_DIR}
 
-SCALARIFORM_UID=$(git rev-parse HEAD)
+  SCALARIFORM_UID=$(git rev-parse HEAD)
 
-SCALARIFORM_P2_ID=scalariform/${SCALARIFORM_UID}/${SCALA_IDE_UID}/${SCALA_UID}
+  SCALARIFORM_P2_ID=scalariform/${SCALARIFORM_UID}/${SCALA_IDE_UID}/${SCALA_UID}
 
-checkP2Cache ${SCALARIFORM_P2_ID}
-if [ $RES != 0 ]
-then
-  info "Building Scalariform"
+  checkP2Cache ${SCALARIFORM_P2_ID}
+  if [ $RES != 0 ]
+  then
+    info "Building Scalariform"
 
-  mvn ${MAVEN_OPTS} \
-    -P ${SCALA_PROFILE} \
-    -Dscala.version=${FULL_SCALA_VERSION} \
-    -Drepo.scala-ide=file://$(getP2CacheLocation ${BUILD_TOOLCHAIN_P2_ID}) \
-    -Dgit.hash=${SCALARIFORM_UID} \
-    clean \
-    verify
+    mvn ${MAVEN_OPTS} \
+      -P ${SCALA_PROFILE} \
+      -Dscala.version=${FULL_SCALA_VERSION} \
+      -Drepo.scala-ide=file://$(getP2CacheLocation ${BUILD_TOOLCHAIN_P2_ID}) \
+      -Dgit.hash=${SCALARIFORM_UID} \
+      clean \
+      verify
 
-  storeP2Cache ${SCALARIFORM_P2_ID} ${SCALARIFORM_DIR}/scalariform.update/target/site
-fi
+    storeP2Cache ${SCALARIFORM_P2_ID} ${SCALARIFORM_DIR}/scalariform.update/target/site
+  fi
+}
 
 ############
 # Scala IDE
 ############
 
-printStep "Scala IDE"
+function stepScalaIDE () {
+  printStep "Scala IDE"
 
-cd ${SCALA_IDE_DIR}
+  cd ${SCALA_IDE_DIR}
 
-if $SIGN_ARTIFACTS
-then
-  SCALA_IDE_P2_ID=scala-ide/${SCALA_IDE_UID}-S/${SCALA_UID}/${SBT_UID}/${SCALA_REFACTORING_UID}/${SCALARIFORM_UID}
-else
-  SCALA_IDE_P2_ID=scala-ide/${SCALA_IDE_UID}/${SCALA_UID}/${SBT_UID}/${SCALA_REFACTORING_UID}/${SCALARIFORM_UID}
-fi
-
-checkP2Cache ${SCALA_IDE_P2_ID}
-if [ $RES != 0 ]
-then
-  info "Building Scala IDE"
-
-  if $RELEASE
+  if $SIGN_ARTIFACTS
   then
-    # TODO: remove the condition. The only reason it is here is because the tool
-    # is not able to correctly read long Scala version string of MANIFEST.MF :(
-    export SET_VERSIONS=true
+    SCALA_IDE_P2_ID=scala-ide/${SCALA_IDE_UID}-S/${SCALA_UID}/${SBT_UID}/${SCALA_REFACTORING_UID}/${SCALARIFORM_UID}
+  else
+    SCALA_IDE_P2_ID=scala-ide/${SCALA_IDE_UID}/${SCALA_UID}/${SBT_UID}/${SCALA_REFACTORING_UID}/${SCALARIFORM_UID}
   fi
 
-  ./build-all.sh \
-    ${MAVEN_OPTS} \
-    -P${ECLIPSE_PROFILE} \
-    -P${SCALA_PROFILE} \
-    -Psbt-new \
-    -Dscala.version=${FULL_SCALA_VERSION} \
-    -Dversion.tag=${VERSION_TAG} \
-    -Dsbt.version=${SBT_VERSION} \
-    -Dsbt.ide.version=${FULL_SBT_VERSION} \
-    -Drepo.scala-refactoring=file://$(getP2CacheLocation ${SCALA_REFACTORING_P2_ID}) \
-    -Drepo.scalariform=file://$(getP2CacheLocation ${SCALARIFORM_P2_ID}) \
-    clean \
-    install
+  checkP2Cache ${SCALA_IDE_P2_ID}
+  if [ $RES != 0 ]
+  then
+    info "Building Scala IDE"
 
-  cd ${SCALA_IDE_DIR}/org.scala-ide.sdt.update-site
+    if $RELEASE
+    then
+      # TODO: remove the condition. The only reason it is here is because the tool
+      # is not able to correctly read long Scala version string of MANIFEST.MF :(
+      export SET_VERSIONS=true
+    fi
 
-  ./plugin-signing.sh ${KEYSTORE_DIR}/typesafe.keystore typesafe ${KEYSTORE_PASS} ${KEYSTORE_PASS}
+    ./build-all.sh \
+      ${MAVEN_OPTS} \
+      -P${ECLIPSE_PROFILE} \
+      -P${SCALA_PROFILE} \
+      -Psbt-new \
+      -Dscala.version=${FULL_SCALA_VERSION} \
+      -Dversion.tag=${VERSION_TAG} \
+      -Dsbt.version=${SBT_VERSION} \
+      -Dsbt.ide.version=${FULL_SBT_VERSION} \
+      -Drepo.scala-refactoring=file://$(getP2CacheLocation ${SCALA_REFACTORING_P2_ID}) \
+      -Drepo.scalariform=file://$(getP2CacheLocation ${SCALARIFORM_P2_ID}) \
+      clean \
+      install
 
-  storeP2Cache ${SCALA_IDE_P2_ID} ${SCALA_IDE_DIR}/org.scala-ide.sdt.update-site/target/site
-fi
+    cd ${SCALA_IDE_DIR}/org.scala-ide.sdt.update-site
+
+    ./plugin-signing.sh ${KEYSTORE_DIR}/typesafe.keystore typesafe ${KEYSTORE_PASS} ${KEYSTORE_PASS}
+
+    storeP2Cache ${SCALA_IDE_P2_ID} ${SCALA_IDE_DIR}/org.scala-ide.sdt.update-site/target/site
+  fi
+}
+
+##################
+# Plugin
+##################
+
+# $1 - pretty name
+# $2 - logic name
+# $3 - var prefix
+# $4 - repo dir
+# $5 - git repo
+# $6 - git branch
+# $7 - version tag
+function stepPlugin () {
+  printStep "$1"
+
+  fetchGitBranch $4 $5 $6 NaN
+
+  cd $4
+
+  P_UID=$(git rev-parse HEAD)
+
+  eval $3_UID=${P_UID}
+
+  P2_ID=$2/${P_UID}/${SCALA_IDE_UID}/${SCALA_UID}
+
+  eval $3_P2_ID=${P2_ID}
+
+  checkP2Cache ${P2_ID}
+  if [ $RES != 0 ]
+  then
+    info "Building $1"
+
+
+    mvn ${MAVEN_OPTS} \
+      -Dtycho.localArtifacts=ignore \
+      -Pset-versions \
+      -P${ECLIPSE_PROFILE} \
+      -P${SCALA_PROFILE} \
+      -Drepo.scala-ide=file://$(getP2CacheLocation ${SCALA_IDE_P2_ID}) \
+      -Dscala.version=${FULL_SCALA_VERSION} \
+      -Dtycho.style=maven \
+      --non-recursive \
+      exec:java
+
+    mvn ${MAVEN_OPTS} \
+      -Dtycho.localArtifacts=ignore \
+      -P${ECLIPSE_PROFILE} \
+      -P${SCALA_PROFILE} \
+      -Drepo.scala-ide=file://$(getP2CacheLocation ${SCALA_IDE_P2_ID}) \
+      -Dscala.version=${FULL_SCALA_VERSION} \
+      -Dversion.tag=$7 \
+      ${MAVEN_SIGN_ARGS} \
+      clean \
+      verify
+
+    storeP2Cache ${P2_ID} *update-site/target/site
+  fi
+}
+
+###########
+# Product
+###########
+
+function stepProduct () {
+  printStep "Product"
+
+  fetchGitBranch ${PRODUCT_DIR} ${PRODUCT_GIT_REPO} ${PRODUCT_GIT_BRANCH} NaN
+
+  cd ${PRODUCT_DIR}
+
+  PRODUCT_UID=$(git rev-parse HEAD)
+
+  PRODUCT_P2_ID=product/${PRODUCT_UID}/${SCALA_IDE_UID}/${SCALA_UID}
+
+  if ${WORKSHEET_PLUGIN}
+  then
+    PRODUCT_P2_ID=${PRODUCT_P2_ID}/W-${WORKSHEET_PLUGIN_UID}
+  fi
+
+  if ${PLAY_PLUGIN}
+  then
+    PRODUCT_P2_ID=${PRODUCT_P2_ID}/P-${PLAY_PLUGIN_UID}
+  fi
+
+  if ${SEARCH_PLUGIN}
+  then
+    PRODUCT_P2_ID=${PRODUCT_P2_ID}/S-${SEARCH_PLUGIN_UID}
+  fi
   
+  checkP2Cache ${PRODUCT_P2_ID}
+  if [ $RES != 0 ]
+  then
+    info "Generate merged update site for Product build"
+
+    rm -rf ${TMP_DIR}/*
+    PRODUCT_BUILD_P2_REPO=${TMP_DIR}/p2-repo-for-product
+
+    cp -r $(getP2CacheLocation ${SCALA_IDE_P2_ID}) ${PRODUCT_BUILD_P2_REPO}
+
+    if ${WORKSHEET_PLUGIN}
+    then
+      mergeP2Repo $(getP2CacheLocation ${WORKSHEET_PLUGIN_P2_ID}) ${PRODUCT_BUILD_P2_REPO}
+    fi
+
+    if ${PLAY_PLUGIN}
+    then
+      mergeP2Repo $(getP2CacheLocation ${PLAY_PLUGIN_P2_ID}) ${PRODUCT_BUILD_P2_REPO}
+    fi
+
+    if ${SEARCH_PLUGIN}
+    then
+      mergeP2Repo $(getP2CacheLocation ${SEARCH_PLUGIN_P2_ID}) ${PRODUCT_BUILD_P2_REPO}
+    fi
+
+    info "Build Product"
+
+    cd ${PRODUCT_DIR}
+
+    REPO_PATH_ECLIPSE="/sdk/${ECOSYSTEM_ECLIPSE_VERSION}"
+    REPO_PATH_SCALA="/${ECOSYSTEM_SCALA_VERSION}/${BUILD_TYPE}/site"
+
+    mvn ${MAVEN_OPTS}\
+      -Dtycho.localArtifacts=ignore \
+      --non-recursive \
+      -Pconfigure \
+      -P${SCALA_PROFILE} \
+      -P${ECLIPSE_PLATFORM} \
+      -Dversion.tag=${PRODUCT_VERSION_TAG} \
+      -Dscala.version=${FULL_SCALA_VERSION} \
+      -Drepopath.platform="${REPO_PATH_ECLIPSE}" \
+      -Drepopath.scala-ide.ecosystem="${REPO_PATH_SCALA}" \
+      process-resources
+
+    mvn ${MAVEN_OPTS} \
+      -Dtycho.localArtifacts=ignore  \
+      -P${SCALA_PROFILE} \
+      -P${ECLIPSE_PLATFORM} \
+      -Dversion.tag=${PRODUCT_VERSION_TAG} \
+      -Dscala.version=${FULL_SCALA_VERSION} \
+      -Drepopath.scala-ide.ecosystem="" \
+      -Drepopath.platform="" \
+      -Drepo.scala-ide.root="file://${PRODUCT_BUILD_P2_REPO}" \
+      ${MAVEN_SIGN_ARGS} \
+      clean \
+      package
+
+    storeP2Cache ${PRODUCT_P2_ID} ${PRODUCT_DIR}/org.scala-ide.product/target/repository
+  fi
+}
+
+##########
+# Publish
+##########
+
+# $1 - pretty name
+# $2 - logic name
+# $3 - var prefix
+function publishPlugin () {
+  info "uploading $1"
+
+  cd ${TMP_DIR}
+  rm -rf *
+  P2_ID_VAR_NAME=$3_P2_ID
+  cp -r $(getP2CacheLocation ${!P2_ID_VAR_NAME}) site
+  ZIP_NAME=site-${TIMESTAMP}.zip
+  zip -rq ${ZIP_NAME} site
+
+  PLUGIN_UPLOAD_DIR="scala-ide.dreamhosters.com/plugins/$2/release/${ECOSYSTEM_ECLIPSE_VERSION}/${SHORT_SCALA_VERSION}.x"
+  scp ${ZIP_NAME} ${SSH_ACCOUNT}:${PLUGIN_UPLOAD_DIR}
+  ssh ${SSH_ACCOUNT} "cd ${PLUGIN_UPLOAD_DIR}; rm -rf site; unzip -q ${ZIP_NAME}"
+
+}
+
+function stepPublish () {
+  printStep "Publish"
+
+  TIMESTAMP=`date '+%Y%m%d-%H%M'`
+#  SSH_ACCOUNT="scalaide@scala-ide.dreamhosters.com"
+  SSH_ACCOUNT="luc@localhost"
+
+  info "generate base ecosystem repo"
+
+  rm -rf ${TMP_DIR}/*
+  ECOSYSTEM_P2_REPO=${TMP_DIR}/p2-repo-for-ecosystem
+  mkdir -p ${ECOSYSTEM_P2_REPO}
+
+  cp -r $(getP2CacheLocation ${SCALA_IDE_P2_ID}) ${ECOSYSTEM_P2_REPO}/base
+
+  if ${PRODUCT}
+  then
+    mergeP2Repo $(getP2CacheLocation ${PRODUCT_P2_ID}) ${ECOSYSTEM_P2_REPO}/base
+  fi
+
+  info "uploading base ecosystem"
+
+  cd ${ECOSYSTEM_P2_REPO}
+
+  ZIP_NAME=base-${TIMESTAMP}.zip
+  zip -qr ${ZIP_NAME} base
+
+  ECOSYSTEM_UPLOAD_DIR="scala-ide.dreamhosters.com/sdk/next/${ECOSYSTEM_ECLIPSE_VERSION}/${ECOSYSTEM_SCALA_VERSION}/${BUILD_TYPE}"
+  scp ${ZIP_NAME} ${SSH_ACCOUNT}:${ECOSYSTEM_UPLOAD_DIR}
+  ssh ${SSH_ACCOUNT} "cd ${ECOSYSTEM_UPLOAD_DIR}; rm -rf base; unzip -q ${ZIP_NAME}"
+
+  if ${WORKSHEET}
+  then
+    publishPlugin "Worksheet" "worksheet" "WORKSHEET_PLUGIN"
+  fi
+
+  if ${PLAY}
+  then
+    publishPlugin "Play" "scala-ide-play2" "PLAY_PLUGIN"
+  fi
+
+  if ${SEARCH}
+  then
+    publishPlugin "Search" "scala-search" "SEARCH_PLUGIN"
+  fi
+
+}
+  
+##############
+##############
+# MAIN SCRIPT
+##############
+##############
+
+stepCheckArguments $*
+
+stepLoadConfig
+stepSetFlags
+
+stepCheckPrerequisites
+stepCheckConfiguration
+
+stepScala
+
+stepZinc
+stepToolchain
+stepScalaRefactoring
+stepScalariform
+
+stepScalaIDE
+
+if ${WORKSHEET_PLUGIN}
+then
+  stepPlugin "Scala Worksheet" "worksheet" "WORKSHEET_PLUGIN" "${WORKSHEET_PLUGIN_DIR}" "${WORKSHEET_PLUGIN_GIT_REPO}" "${WORKSHEET_PLUGIN_GIT_BRANCH}" "${WORKSHEET_PLUGIN_VERSION_TAG}"
+fi
+
+if ${PLAY_PLUGIN}
+then
+  stepPlugin "Play" "play" "PLAY_PLUGIN" "${PLAY_PLUGIN_DIR}" "${PLAY_PLUGIN_GIT_REPO}" "${PLAY_PLUGIN_GIT_BRANCH}" "${PLAY_PLUGIN_VERSION_TAG}"
+fi
+
+if ${SEARCH_PLUGIN}
+then
+  stepPlugin "Scala Search" "search" "SEARCH_PLUGIN" "${SEARCH_PLUGIN_DIR}" "${SEARCH_PLUGIN_GIT_REPO}" "${SEARCH_PLUGIN_GIT_BRANCH}" "${SEARCH_PLUGIN_VERSION_TAG}"
+fi
+
+if ${PRODUCT}
+then
+  stepProduct
+fi
+
+if ${PUBLISH}
+then
+  stepPublish
+fi
 
 ######
 # END
