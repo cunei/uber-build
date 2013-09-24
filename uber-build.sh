@@ -8,52 +8,71 @@ fi
 #################################################################
 # Unification script
 # 
-# This script was created to support 3 test cases:
+# This script was created to support multiple test cases:
 # * generating Scala IDE + plugins releases
 # * being run during Scala PR validation
 # * being run locally to reproduce Scala PR validation results
+# * run every night to check the script itself
 #
 # Main features:
 # * rebuilds and cache each piece as required
 # * gets instructions from a 'config' file
 ##################################################################
 
+# temp dir were all 'non-build' operation are performed
 TMP_DIR=$(mktemp -d -t uber-build.XXXX)
+
+# ant options. The Scala build needs a fair amount of memory
 export ANT_OPTS="-Xms512M -Xmx2048M -Xss1M -XX:MaxPermSize=128M"
 
+####################
+# logging functions
+####################
+
+# Logging about step being performed
 # $1 - title
 function printStep () {
   echo ">>>>> $1"
 }
 
+# General logging
 # $* - message
 function info () {
   echo ">> $*"
 }
 
-# $1 - parameter name
+# Debug logging for variable
+# $1 - variable name
 function debugValue () {
   echo "----- $1=${!1}"
 }
 
+# General debug logging
 # $* - message
 function debug () {
   echo "----- $*"
 }
 
+# General error logging
 # $* - message
 function error () {
   echo "!!!!! $*"
   exit 3
 }
 
-# $1 - parameter name
+# Error logging for wrong variable value
+# $1 - variable name
 # $2 - possible choices
 function missingParameterChoice () {
   echo "Bad value for $1. Was '${!1}', should be one of: $2." >&2
   exit 2
 }
 
+#########
+# Checks
+#########
+
+# Check if the given parameters are defined
 # $* - parameter names to check non-empty
 function checkParameters () {
   for i in $*
@@ -66,14 +85,17 @@ function checkParameters () {
   done
 }
 
+# Check if an artifact is available
 # $1 - groupId
 # $2 - artifacId
 # $3 - version
-# $4 - extra repository (optional)
+# $4 - extra repository to look in (optional)
 # return value in $RES
 function checkAvailability () {
   cd ${TMP_DIR}
   rm -rf *
+
+# pom file for the test project
   cat > pom.xml << EOF
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
@@ -94,6 +116,7 @@ EOF
 
   if [ -n "$4" ]
   then
+# adds the extra repository
     cat >> pom.xml << EOF
   <repositories>
     <repository>
@@ -108,12 +131,14 @@ EOF
   cat >> pom.xml << EOF
 </project>
 EOF
+
   # TODO push in real log
   set +e
-#  mvn $MAVEN_OPTS compile
   mvn $MAVEN_OPTS compile > /dev/null 2>&1
   RES=$?
   set -e
+
+# log the result
   if [ ${RES} == 0 ]
   then
     debug "$1:$2:jar:$3 found !"
@@ -122,6 +147,7 @@ EOF
   fi
 }
 
+# Like check availability, but fail if not available.
 # $1 - groupId
 # $2 - artifactId
 # $3 - version
@@ -134,6 +160,21 @@ function checkNeeded () {
   fi
 }
 
+# Check if the given executable is in the PATH.
+# $1 - executable
+# return value in $RES
+function checkExecutableOnPath () {
+  set +e
+  BIN_LOCATION=$(which $1)
+  RES=$?
+  set -e
+}
+
+########################
+# p2 repo cache support
+########################
+
+# Check if a p2 repo is available in the cache.
 # $1 - p2 cache id
 # return value in $RES
 function checkP2Cache () {
@@ -147,6 +188,7 @@ function checkP2Cache () {
   fi
 }
 
+# Store a p2 repo in the cache.
 # $1 - p2 cache id
 # $2 - repo to cache
 function storeP2Cache () {
@@ -155,11 +197,13 @@ function storeP2Cache () {
   debug "$1 cached !"
 }
 
+# Return the location in the file system of the cached p2 repo.
 # $1 - p2 cache id
 function getP2CacheLocation () {
   echo ${P2_CACHE_DIR}/$1
 }
 
+# Merge a p2 repo into an other one.
 # $1 - repository to merge
 # $2 - location to merge it to
 function mergeP2Repo () {
@@ -170,6 +214,12 @@ function mergeP2Repo () {
   mvn $MAVEN_OPTS -Drepo.source="$1" -Drepo.dest="$2" package
 }
 
+############
+# m2 + osgi
+############
+
+# Extract the osgi version from the MANIFEST.MF file
+# of an artifact available in the local m2 repo.
 # $1 - groupId
 # $2 - artifactId
 # $3 - version
@@ -179,15 +229,6 @@ function osgiVersion () {
   unzip -q "${LOCAL_M2_REPO}/${1//\.//}/$2/$3/$2-$3.jar"
   # used \r as an extra field separator, to avoid problem with Windows style new lines.
   grep Bundle-Version META-INF/MANIFEST.MF | awk -F '[ \r]' '{printf $2;}'
-}
-
-# $1 - executable
-# return value in $RES
-function checkExecutableOnPath () {
-  set +e
-  BIN_LOCATION=$(which $1)
-  RES=$?
-  set -e
 }
 
 ##############
@@ -242,6 +283,12 @@ function fetchGitBranch () {
 }
 
 ##################
+##################
+# The build steps
+##################
+##################
+
+##################
 # Check arguments
 ##################
 
@@ -276,14 +323,15 @@ function stepCheckArguments () {
 function stepLoadConfig () {
   printStep "Load config"
 
-  SCRIPT_DIR=$(cd "$( dirname "$0" )" && pwd)
+# set the working folders
   CURRENT_DIR=$(pwd)
+  SCRIPT_DIR=$(cd "$( dirname "$0" )" && pwd)
 
-# Load the default parameters
+# load the default parameters
 
   . ${SCRIPT_DIR}/config/default.conf
 
-# Load the config
+# load the config
 
   . ${CONFIG_FILE}
 }
@@ -295,7 +343,7 @@ function stepLoadConfig () {
 function stepSetFlags () {
   printStep "Set flags"
 
-# flags
+# the flags
   RELEASE=false
   DRY_RUN=false
   VALIDATOR=false
@@ -305,6 +353,7 @@ function stepSetFlags () {
   SEARCH_PLUGIN=false
   PUBLISH=false
 
+# Check what to do
   case ${OPERATION} in
     release )
       RELEASE=true
@@ -325,6 +374,7 @@ function stepSetFlags () {
 
   if ${RELEASE}
   then
+# Check the plugins to build.
     for PLUGIN in ${PLUGINS}
     do
       case ${PLUGIN} in
@@ -342,6 +392,7 @@ function stepSetFlags () {
       esac
     done
 
+# Check the type of release.
     case ${BUILD_TYPE} in
       dev | stable )
         if ${DRY_RUN}
@@ -356,7 +407,6 @@ function stepSetFlags () {
         ;;
     esac
   fi
-
 }
 
 #################
@@ -749,7 +799,10 @@ function stepScalaIDE () {
 
     cd ${SCALA_IDE_DIR}/org.scala-ide.sdt.update-site
 
-    ./plugin-signing.sh ${KEYSTORE_DIR}/typesafe.keystore typesafe ${KEYSTORE_PASS} ${KEYSTORE_PASS}
+    if $SIGN_ARTIFACTS
+    then
+      ./plugin-signing.sh ${KEYSTORE_DIR}/typesafe.keystore typesafe ${KEYSTORE_PASS} ${KEYSTORE_PASS}
+    fi
 
     storeP2Cache ${SCALA_IDE_P2_ID} ${SCALA_IDE_DIR}/org.scala-ide.sdt.update-site/target/site
   fi
