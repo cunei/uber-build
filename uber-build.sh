@@ -5,9 +5,12 @@ then
   set -x
 fi
 
+# Initialize file descriptors. May be modified later.
+exec 6>&1 7>&1
+
 #################################################################
 # Unification script
-# 
+#
 # This script was created to support multiple test cases:
 # * generating Scala IDE + plugins releases
 # * being run during Scala PR validation
@@ -20,7 +23,13 @@ fi
 ##################################################################
 
 # temp dir were all 'non-build' operation are performed
-TMP_DIR=$(mktemp -d -t uber-build.XXXX)
+TMP_ROOT_DIR=$(mktemp -d -t uber-build.XXXX)
+TMP_DIR=${TMP_ROOT_DIR}/tmp
+TMP_CACHE_DIR=${TMP_ROOT_DIR}/cacheLink
+mkdir ${TMP_DIR}
+
+# Timestamp used for logging and marking zip files
+TIMESTAMP=`date '+%Y%m%d-%H%M'`
 
 # ant options. The Scala build needs a fair amount of memory
 export ANT_OPTS="-Xms512M -Xmx2048M -Xss1M -XX:MaxPermSize=128M"
@@ -32,13 +41,13 @@ export ANT_OPTS="-Xms512M -Xmx2048M -Xss1M -XX:MaxPermSize=128M"
 # Logging about step being performed
 # $1 - title
 function printStep () {
-  echo ">>>>> $1"
+  echo ">>>>> $1" >&6
 }
 
 # General logging
 # $* - message
 function info () {
-  echo ">> $*"
+  echo ">> $*" >&6
 }
 
 # Debug logging for variable
@@ -56,7 +65,7 @@ function debug () {
 # General error logging
 # $* - message
 function error () {
-  echo "!!!!! $*"
+  echo "!!!!! $*" >&2
   exit 3
 }
 
@@ -64,7 +73,7 @@ function error () {
 # $1 - variable name
 # $2 - possible choices
 function missingParameterChoice () {
-  echo "Bad value for $1. Was '${!1}', should be one of: $2." >&2
+  echo "!!!!! Bad value for $1. Was '${!1}', should be one of: $2." >&2
   exit 2
 }
 
@@ -79,7 +88,7 @@ function checkParameters () {
   do
     if [ -z "${!i}" ]
     then
-      echo "Bad value for $i. It should be defined." >&2
+      echo "!!!!! Bad value for $i. It should be defined." >&2
       exit 2
     fi
   done
@@ -134,7 +143,7 @@ EOF
 
   # TODO push in real log
   set +e
-  mvn $MAVEN_OPTS compile > /dev/null 2>&1
+  mvn $MAVEN_OPTS compile
   RES=$?
   set -e
 
@@ -178,12 +187,18 @@ function checkExecutableOnPath () {
 # $1 - p2 cache id
 # return value in $RES
 function checkP2Cache () {
-  if [ -d ${P2_CACHE_DIR}/$1 ]
+  if ${WITH_CACHE}
   then
-    debug "$1 found !"
-    RES=0
+    if [ -d ${P2_CACHE_DIR}/$1 ]
+    then
+      debug "$1 found !"
+      RES=0
+    else
+      debug "$1 not found !"
+      RES=1
+    fi
   else
-    debug "$1 not found !"
+    debug "caching disabled"
     RES=1
   fi
 }
@@ -192,15 +207,27 @@ function checkP2Cache () {
 # $1 - p2 cache id
 # $2 - repo to cache
 function storeP2Cache () {
-  mkdir -p $(dirname ${P2_CACHE_DIR}/$1)
-  cp -r $2 ${P2_CACHE_DIR}/$1
-  debug "$1 cached !"
+  if ${WITH_CACHE}
+  then
+    mkdir -p $(dirname ${P2_CACHE_DIR}/$1)
+    cp -r $2 ${P2_CACHE_DIR}/$1
+    debug "$1 cached !"
+  else
+# only caching the original location
+    mkdir -p ${TMP_CACHE_DIR}/$1
+    echo -n $2 > ${TMP_CACHE_DIR}/$1/link
+  fi
 }
 
 # Return the location in the file system of the cached p2 repo.
 # $1 - p2 cache id
 function getP2CacheLocation () {
-  echo ${P2_CACHE_DIR}/$1
+  if ${WITH_CACHE}
+  then
+    echo ${P2_CACHE_DIR}/$1
+  else
+    cat ${TMP_CACHE_DIR}/$1/link
+  fi
 }
 
 # Merge a p2 repo into an other one.
@@ -235,6 +262,7 @@ function osgiVersion () {
 # GIT support
 ##############
 
+# Checkout the given branch. Clone and fetch the remote repo as needed.
 # $1 - local dir
 # $2 - remote repo
 # $3 - branch, tag or hash
@@ -336,6 +364,33 @@ function stepLoadConfig () {
   . ${CONFIG_FILE}
 }
 
+################
+# Setup logging
+################
+
+function stepSetupLogging () {
+  printStep "Setup logging"
+
+  if [ -z "${DEBUG}" ]
+# enable in file logging only if not in debug mode
+  then
+    case "${LOGGING}" in
+      file )
+        LOG_FILE=${BUILD_DIR}/log-${TIMESTAMP}.txt
+        > ${LOG_FILE}
+        exec 3>> ${LOG_FILE} 4>&1 5>&2 6>&1
+
+        exec 1>&3 2> >(tee -a /dev/fd/3 >&5) 6> >(tee -a /dev/fd/3 >&4)
+        ;;
+      console)
+        ;;
+      * )
+        missingParameterChoice "LOGGING" "file, console"
+        ;;
+    esac
+  fi
+}
+
 ############
 # Set flags
 ############
@@ -407,6 +462,15 @@ function stepSetFlags () {
         ;;
     esac
   fi
+
+# Check the cache flag
+  case ${WITH_CACHE} in
+    true | false )
+      ;;
+    * )
+      missingParameterChoice "WITH_CACHE" "true, false"
+      ;;
+  esac
 }
 
 #################
@@ -423,12 +487,51 @@ function stepCheckPrerequisites () {
     error "Please run the script with Java 1.6. Current version is: ${JAVA_VERSION}."
   fi
 
+# ant is need to rebuild Scala
   if $VALIDATOR
   then
-    checkExecutableOnPath ant
+    if [ -n "${ANT}" ]
+    then
+      if [ -x "${ANT}" ]
+      then
+        ${ANT}
+      else
+        error "variable ANT is set, but doesn't point to an executable."
+      fi
+    else
+      checkExecutableOnPath "ant"
+      if [ "${RES}" != 0 ]
+      then
+        error "To use a special version of Scala, 'ant' should be in the PATH, or the variable ANT should be set"
+      fi
+    fi
+  fi
+
+# eclipse and keytool are needed to sign the jars
+  if $SIGN_ARTIFACTS
+  then
+    checkExecutableOnPath "keytool"
     if [ "${RES}" != 0 ]
     then
-      error "Ant is required to use a special version of Scala"
+      error "keytool is required on PATH to sign the jars"
+    fi
+
+    if [ -n "${ECLIPSE}" ]
+    then
+      if [ -x "${ECLIPSE}" ]
+      then
+        export ECLIPSE="${ECLIPSE}"
+      else
+        error "variable ECLIPSE is set, but doesn't point to an executable."
+      fi
+    else
+      checkExecutableOnPath "eclipse"
+      if [ "${RES}" != 0 ]
+      then
+        error "to sign the jars, 'eclipse' should be in the PATH, or the variable ECLIPSE should be set."
+      else
+        export ECLIPSE=$(which eclipse)
+      fi
     fi
   fi
 }
@@ -437,20 +540,21 @@ function stepCheckPrerequisites () {
 # Check configuration
 ######################
 
+# Checks that all needed parameters are correctly defined.
 function stepCheckConfiguration () {
   printStep "Check configuration"
 
   checkParameters "SCRIPT_DIR" "BUILD_DIR" "LOCAL_M2_REPO" "P2_CACHE_DIR"
 
-  mkdir -p ${BUILD_DIR}
-
 # configure maven here. Needed for some checks
   MAVEN_OPTS="-e -U -Dmaven.repo.local=${LOCAL_M2_REPO}"
+
+  mkdir -p ${BUILD_DIR}
 
   if ${RELEASE}
   then
     checkParameters "SCALA_VERSION"
-  fi 
+  fi
 
   if ${VALIDATOR}
   then
@@ -477,7 +581,7 @@ function stepCheckConfiguration () {
   then
     checkParameters "SEARCH_PLUGIN_DIR" "SEARCH_PLUGIN_GIT_REPO" "SEARCH_PLUGIN_GIT_BRANCH" "SEARCH_PLUGIN_VERSION_TAG"
   fi
-  
+
   if ${PRODUCT}
   then
     checkParameters "PRODUCT_DIR" "PRODUCT_GIT_REPO" "PRODUCT_GIT_BRANCH" "PRODUCT_VERSION_TAG"
@@ -485,23 +589,13 @@ function stepCheckConfiguration () {
 
   if ${SIGN_ARTIFACTS}
   then
-    checkExecutableOnPath "keytool"
-    if [ "${RES}" != 0 ]
-    then
-      error "keytool is required on PATH to sign the jars"
-    fi
-    checkExecutableOnPath "eclipse"
-    if [ "${RES}" != 0 ]
-    then
-      error "eclipse is required on PATH to sign the jars"
-    fi
-
     checkParameters "KEYSTORE_DIR" "KEYSTORE_PASS"
 
     cd $CURRENT_DIR
     cd $KEYSTORE_DIR
     KEYSTORE_DIR=$(pwd)
 
+# clone the keystore repo. Needed to check if the pass is fine.
     if [ ! -d "${KEYSTORE_DIR}" ]
     then
       checkParameters "KEYSTORE_GIT_REPO"
@@ -514,8 +608,8 @@ function stepCheckConfiguration () {
     MAVEN_SIGN_ARGS=" -Djarsigner.storepass=${KEYSTORE_PASS} -Djarsigner.keypass=${KEYSTORE_PASS} -Djarsigner.keystore=${KEYSTORE_DIR}/typesafe.keystore "
   fi
 
-# set extra variables
-  case ${SCALA_VERSION} in 
+# set extra variables. There are different ways to reference the Scala and Eclipse versions.
+  case ${SCALA_VERSION} in
     2.10.* )
       SCALA_PROFILE="scala-2.10.x"
       SCALA_REPO_SUFFIX="210x"
@@ -553,6 +647,7 @@ function stepCheckConfiguration () {
 function stepScala () {
   printStep "Scala"
 
+# for releases, already existing Scala binaries are used.
   if ${RELEASE}
   then
     checkNeeded "org.scala-lang" "scala-compiler" "${SCALA_VERSION}"
@@ -561,6 +656,7 @@ function stepScala () {
     SCALA_UID=$(osgiVersion "org.scala-lang" "scala-compiler" "${SCALA_VERSION}")
   fi
 
+# for Scala pr validation, custom build Scala binaries are used.
   if ${VALIDATOR}
   then
     FULL_SCALA_VERSION="${SCALA_VERSION}-${SCALA_GIT_HASH}-SNAPSHOT"
@@ -623,12 +719,14 @@ function stepZinc () {
 
   FULL_SBT_VERSION="${SBT_VERSION}-on-${FULL_SCALA_VERSION}-for-IDE-SNAPSHOT"
 
+# for releases, already existing sbt binaries are used.
   if ${RELEASE}
   then
     IDE_M2_REPO="http://typesafe.artifactoryonline.com/typesafe/ide-${SHORT_SCALA_VERSION}"
     checkNeeded "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}" "${IDE_M2_REPO}"
   fi
 
+# for Scala pr validation, custom build sbt binaries are used.
   if ${VALIDATOR}
   then
     checkAvailability "com.typesafe.sbt" "incremental-compiler" "${FULL_SBT_VERSION}"
@@ -895,7 +993,7 @@ function stepProduct () {
   then
     PRODUCT_P2_ID=${PRODUCT_P2_ID}/S-${SEARCH_PLUGIN_UID}
   fi
-  
+
   checkP2Cache ${PRODUCT_P2_ID}
   if [ $RES != 0 ]
   then
@@ -983,7 +1081,6 @@ function publishPlugin () {
 function stepPublish () {
   printStep "Publish"
 
-  TIMESTAMP=`date '+%Y%m%d-%H%M'`
 #  SSH_ACCOUNT="scalaide@scala-ide.dreamhosters.com"
   SSH_ACCOUNT="luc@localhost"
 
@@ -1027,7 +1124,7 @@ function stepPublish () {
   fi
 
 }
-  
+
 ##############
 ##############
 # MAIN SCRIPT
@@ -1037,6 +1134,7 @@ function stepPublish () {
 stepCheckArguments $*
 
 stepLoadConfig
+stepSetupLogging
 stepSetFlags
 
 stepCheckPrerequisites

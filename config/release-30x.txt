@@ -30,6 +30,8 @@ PRODUCT=true
 ECLIPSE_PLATFORM=juno
 # dev, stable
 BUILD_TYPE=dev
+# console, file
+LOGGING=file
 
 ##### Scala information #####
 SCALA_GIT_REPO=git://github.com/scala/scala
