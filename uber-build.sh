@@ -144,12 +144,10 @@ EOF
   # TODO: DEBUGGGING !!!!!
 
   which mvn
-  alias mvn
 
   set +e
 
   which mvn
-  alias mvn
 
   mvn $MAVEN_OPTS compile
   RES=$?
