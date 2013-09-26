@@ -1,4 +1,5 @@
 #!/bin/bash -e
+env
 
 if [ -n "$DEBUG" ]
 then
