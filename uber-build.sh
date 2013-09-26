@@ -400,8 +400,9 @@ function stepSetFlags () {
 
 # the flags
   RELEASE=false
-  DRY_RUN=false
+  DRY_RUN=true
   VALIDATOR=false
+  SCALA_REBUILD=false
   SIGN_ARTIFACTS=false
   WORKSHEET_PLUGIN=false
   PLAY_PLUGIN=false
@@ -412,6 +413,7 @@ function stepSetFlags () {
   case ${OPERATION} in
     release )
       RELEASE=true
+      DRY_RUN=false
       SIGN_ARTIFACTS=true
       ;;
     release-dryrun )
@@ -419,11 +421,19 @@ function stepSetFlags () {
       DRY_RUN=true
       SIGN_ARTIFACTS=true
       ;;
-    scala-validator )
+    nightly )
+      RELEASE=true
+      DRY_RUN=true
+      SIGN_ARTIFACTS=false
+    scala-pr-validator )
       VALIDATOR=true
       ;;
+    scala-pr-rebulid )
+      VALIDATOR=true
+      SCALA_REBUILD=true
+      ;;
     * )
-      missingParameterChoice "OPERATION" "release, release-dryrun, scala-validator"
+      missingParameterChoice "OPERATION" "release, release-dryrun, scala-pr-validator, scala-pr-rebulid"
       ;;
   esac
 
@@ -488,7 +498,7 @@ function stepCheckPrerequisites () {
   fi
 
 # ant is need to rebuild Scala
-  if $VALIDATOR
+  if ${SCALA_REBUILD}
   then
     if [ -n "${ANT}" ]
     then
@@ -496,19 +506,19 @@ function stepCheckPrerequisites () {
       then
         ${ANT}
       else
-        error "variable ANT is set, but doesn't point to an executable."
+        error "The variable ANT is set, but doesn't point to an executable."
       fi
     else
       checkExecutableOnPath "ant"
       if [ "${RES}" != 0 ]
       then
-        error "To use a special version of Scala, 'ant' should be in the PATH, or the variable ANT should be set"
+        error "To be able to rebuild a special version of Scala, 'ant' should be in the PATH, or the variable ANT should be set"
       fi
     fi
   fi
 
 # eclipse and keytool are needed to sign the jars
-  if $SIGN_ARTIFACTS
+  if ${SIGN_ARTIFACTS}
   then
     checkExecutableOnPath "keytool"
     if [ "${RES}" != 0 ]
@@ -522,7 +532,7 @@ function stepCheckPrerequisites () {
       then
         export ECLIPSE="${ECLIPSE}"
       else
-        error "variable ECLIPSE is set, but doesn't point to an executable."
+        error "The variable ECLIPSE is set, but doesn't point to an executable."
       fi
     else
       checkExecutableOnPath "eclipse"
@@ -562,8 +572,10 @@ function stepCheckConfiguration () {
     checkParameters "ZINC_BUILD_DIR" "ZINC_BUILD_GIT_REPO" "ZINC_BUILD_GIT_BRANCH"
   fi
 
-  checkParameters "SCALA_IDE_DIR" "SCALA_IDE_GIT_REPO" "SCALA_IDE_GIT_BRANCH"
-  checkParameters "ECLIPSE_PLATFORM" "VERSION_TAG"
+  checkParameters "SBT_VERSION"
+
+  checkParameters "ECLIPSE_PLATFORM"
+  checkParameters "SCALA_IDE_DIR" "SCALA_IDE_GIT_REPO" "SCALA_IDE_GIT_BRANCH" "SCALA_IDE_VERSION_TAG"
   checkParameters "SCALA_REFACTORING_DIR" "SCALA_REFACTORING_GIT_REPO" "SCALA_REFACTORING_GIT_BRANCH"
   checkParameters "SCALARIFORM_DIR" "SCALARIFORM_GIT_REPO" "SCALARIFORM_GIT_BRANCH"
 
@@ -682,6 +694,11 @@ function stepScala () {
 
         checkNeeded "org.scala-lang" "scala-compiler" "${FULL_SCALA_VERSION}"
       else
+        if ! ${SCALA_REBUILD}
+        then
+          error "Scala binaries with git hash ${SCALA_GIT_HASH} were not found on scala-webapps, and will not be rebuilt locally."
+        fi
+
         info "Building Scala from source"
 
         fetchGitBranch "${SCALA_DIR}" "${SCALA_GIT_REPO}" "${SCALA_GIT_HASH}" NaN "pr"
@@ -887,7 +904,7 @@ function stepScalaIDE () {
       -P${SCALA_PROFILE} \
       -Psbt-new \
       -Dscala.version=${FULL_SCALA_VERSION} \
-      -Dversion.tag=${VERSION_TAG} \
+      -Dversion.tag=${SCALA_IDE_VERSION_TAG} \
       -Dsbt.version=${SBT_VERSION} \
       -Dsbt.ide.version=${FULL_SBT_VERSION} \
       -Drepo.scala-refactoring=file://$(getP2CacheLocation ${SCALA_REFACTORING_P2_ID}) \
