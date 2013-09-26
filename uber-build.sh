@@ -1,5 +1,6 @@
 #!/bin/bash -e
 env
+declare -f mvn
 
 if [ -n "$DEBUG" ]
 then
