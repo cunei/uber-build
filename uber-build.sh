@@ -1,6 +1,5 @@
 #!/bin/bash -e
 env
-declare -f mvn
 
 if [ -n "$DEBUG" ]
 then
@@ -151,7 +150,8 @@ EOF
 
   which mvn
 
-  mvn $MAVEN_OPTS compile
+  "$MAVEN" $MAVEN_OPTS compile
+  /usr/bin/mvn $MAVEN_OPTS compile
   RES=$?
   set -e
 
