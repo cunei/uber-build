@@ -425,6 +425,7 @@ function stepSetFlags () {
       RELEASE=true
       DRY_RUN=true
       SIGN_ARTIFACTS=false
+      ;;
     scala-pr-validator )
       VALIDATOR=true
       ;;
