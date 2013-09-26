@@ -141,8 +141,16 @@ EOF
 </project>
 EOF
 
-  # TODO push in real log
+  # TODO: DEBUGGGING !!!!!
+
+  which mvn
+  alias mvn
+
   set +e
+
+  which mvn
+  alias mvn
+
   mvn $MAVEN_OPTS compile
   RES=$?
   set -e
