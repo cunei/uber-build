@@ -558,7 +558,7 @@ function stepCheckConfiguration () {
   checkParameters "SCRIPT_DIR" "BUILD_DIR" "LOCAL_M2_REPO" "P2_CACHE_DIR"
 
 # configure maven here. Needed for some checks
-  MAVEN_OPTS="-e -U -Dmaven.repo.local=${LOCAL_M2_REPO}"
+  MAVEN_OPTS="-U -Dmaven.repo.local=${LOCAL_M2_REPO}"
 
   mkdir -p ${BUILD_DIR}
 
